@@ -1113,6 +1113,11 @@ static int rist_sender_start(struct rist_sender *ctx)
 {
 	pthread_mutex_lock(&ctx->mutex);
 	if (!ctx->protocol_running) {
+		if (rist_thread_create(&ctx->common, &ctx->udp_pacing_thread, NULL, udp_pacing_pthread, (void *)&ctx->common) != 0)
+		{
+			rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Could not created udp pacing thread.\n");
+			goto unlock_failed;
+		}
 		if (rist_thread_create(&ctx->common, &ctx->sender_thread, NULL, sender_pthread_protocol, (void *)ctx) != 0)
 		{
 			rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Could not created sender thread.\n");
@@ -1142,6 +1147,11 @@ static int rist_receiver_start(struct rist_receiver *ctx)
 	pthread_mutex_lock(&ctx->mutex);
 	if (!ctx->protocol_running)
 	{
+		if (rist_thread_create(&ctx->common, &ctx->udp_pacing_thread, NULL, udp_pacing_pthread, (void *)&ctx->common) != 0)
+		{
+			rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Could not create udp pacing thread.\n");
+			goto unlock_failed;
+		}
 		if (rist_thread_create(&ctx->common, &ctx->receiver_thread, NULL, receiver_pthread_protocol, (void *)ctx) != 0)
 		{
 			rist_log_priv(&ctx->common, RIST_LOG_ERROR, "Could not create receiver protocol thread.\n");
@@ -1185,8 +1195,12 @@ static int rist_sender_destroy(struct rist_sender *ctx)
 	pthread_mutex_lock(&ctx->mutex);
 	bool running = ctx->protocol_running;
 	pthread_mutex_unlock(&ctx->mutex);
-	if (running)
+	if (running) {
 		pthread_join(ctx->sender_thread, NULL);
+		pthread_join(ctx->udp_pacing_thread, NULL);
+		if (atomic_load_explicit(&ctx->common.shutdown, memory_order_acquire) != 3)
+			rist_log_priv(&ctx->common, RIST_LOG_WARN, "Thread cleanup may be incomplete (%d)\n",atomic_load_explicit(&ctx->common.shutdown, memory_order_acquire));
+	}
 	rist_sender_destroy_local(ctx);
 
 	return 0;
@@ -1204,8 +1218,12 @@ static int rist_receiver_destroy(struct rist_receiver *ctx)
 	pthread_mutex_lock(&ctx->mutex);
 	bool running = ctx->protocol_running;
 	pthread_mutex_unlock(&ctx->mutex);
-	if (running)
+	if (running) {
 		pthread_join(ctx->receiver_thread, NULL);
+		pthread_join(ctx->udp_pacing_thread, NULL);
+		if (atomic_load_explicit(&ctx->common.shutdown, memory_order_acquire) != 3)
+			rist_log_priv(&ctx->common, RIST_LOG_WARN, "Thread cleanup may be incomplete (%d)\n",atomic_load_explicit(&ctx->common.shutdown, memory_order_acquire));
+	}
 	rist_receiver_destroy_local(ctx);
 
 	return 0;

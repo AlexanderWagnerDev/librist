@@ -6,12 +6,24 @@
 
 #include <stdint.h>
 
-uint64_t timestampNTP_u64(void) {
-  // We use clock_gettime instead of gettimeofday even though we only need
-  // microseconds because gettimeofday implementation under linux is dependent
-  // on the kernel clock and can produce duplicate times (too close to kernel
-  // timer)
+timespec_t timestamp_ts(void) {
+  timespec_t ts;
+  ts.tv_nsec = 0;
+  ts.tv_sec = 0;
+  #if defined(__APPLE__)
+    clock_gettime_osx(CLOCK_MONOTONIC_OSX, &ts);
+  #else  // Linux and windows through wrapper on time-shim.c
+    // We use clock_gettime instead of gettimeofday even though we only need
+    // microseconds because gettimeofday implementation under linux is dependent
+    // on the kernel clock and can produce duplicate times (too close to kernel
+    // timer)
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+  #endif
+  return ts;
+}
 
+uint64_t timestampNTP_u64(void) {
+  timespec_t ts = timestamp_ts();
   // We use the NTP time standard: rfc5905
   // (https://tools.ietf.org/html/rfc5905#section-6) The 64-bit timestamps used
   // by NTP consist of a 32-bit part for seconds and a 32-bit part for
@@ -19,12 +31,6 @@ uint64_t timestampNTP_u64(void) {
   // (136 years) and a theoretical resolution of 2−32 seconds (233 picoseconds).
   // NTP uses an epoch of January 1, 1900. Therefore, the first rollover occurs
   // on February 7, 2036.
-  timespec_t ts;
-#if defined(__APPLE__)
-  clock_gettime_osx(CLOCK_MONOTONIC_OSX, &ts);
-#else
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-#endif
   // Convert nanoseconds to 32-bits fraction (232 picosecond units)
   uint64_t t = (uint64_t)(ts.tv_nsec) << 32;
   t /= 1000000000;

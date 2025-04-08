@@ -40,6 +40,7 @@
 #define RIST_SERVER_QUEUE_BUFFERS ((UINT16_SIZE) * 8)
 #define RIST_RETRY_QUEUE_BUFFERS ((UINT16_SIZE) * 4)
 #define RIST_OOB_QUEUE_BUFFERS ((UINT16_SIZE) * 2)
+#define RIST_UDP_PACING_QUEUE_BUFFERS ((UINT16_SIZE) * 14)
 #define RIST_DATAOUT_QUEUE_BUFFERS (1024)
 // This will restrict the use of the library to the configured maximum packet size
 #define RIST_MAX_PACKET_SIZE (10000)
@@ -345,6 +346,14 @@ struct rist_common_ctx {
 	uint16_t oob_queue_read_index;
 	uint16_t oob_queue_write_index;
 
+	pthread_rwlock_t udp_pacing_queue_lock;
+	struct rist_buffer *udp_pacing_queue[RIST_UDP_PACING_QUEUE_BUFFERS]; /* udp pacing queue */
+	size_t udp_pacing_queue_bytesize;
+	atomic_ulong udp_pacing_queue_size;
+	atomic_ulong udp_pacing_queue_read_index;
+	atomic_ulong udp_pacing_queue_write_index;
+	size_t udp_pacing_queue_max;
+
 	bool debug;
 	uint32_t birthtime_rtp_offset;
 
@@ -373,6 +382,7 @@ struct rist_receiver {
 	/* Receiver thread variables */
 	bool protocol_running;
 	pthread_t receiver_thread;
+	pthread_t udp_pacing_thread;
 
 	/* Reporting id */
 	intptr_t id;
@@ -399,6 +409,7 @@ struct rist_sender {
 	/* Sender thread variables */
 	bool protocol_running;
 	pthread_t sender_thread;
+	pthread_t udp_pacing_thread;
 	/* data/nacks out thread signaling */
 	pthread_cond_t condition;
 	pthread_mutex_t mutex;
@@ -643,6 +654,7 @@ RIST_PRIV void free_data_block(struct rist_data_block **const block);
 /* needed after splitting up */
 RIST_PRIV PTHREAD_START_FUNC(sender_pthread_protocol, arg);
 RIST_PRIV PTHREAD_START_FUNC(receiver_pthread_protocol, arg);
+RIST_PRIV PTHREAD_START_FUNC(udp_pacing_pthread, arg);
 RIST_PRIV int rist_max_jitter_set(struct rist_common_ctx *ctx, int t);
 RIST_PRIV int parse_url_options(const char *url, struct rist_peer_config *output_peer_config);
 RIST_PRIV int parse_url_udp_options(const char *url, struct rist_udp_config *output_udp_config);
