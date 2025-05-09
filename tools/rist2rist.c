@@ -58,6 +58,7 @@ static struct option long_options[] = {
 { "statsinterval",   required_argument, NULL, 'S' },
 { "verbose-level",   required_argument, NULL, 'v' },
 { "remote-logging",  required_argument, NULL, 'r' },
+{ "profile",         required_argument, NULL, 'p' },
 #if HAVE_SRP_SUPPORT
 { "srpfile",         required_argument, NULL, 'F' },
 #endif
@@ -74,6 +75,7 @@ const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
 "       -N | --cname identifier                   | Manually configured identifier                           |\n"
 "       -v | --verbose-level value                | To disable logging: -1, log levels match syslog levels   |\n"
 "       -r | --remote-logging IP:PORT             | Send logs and stats to this IP:PORT using udp messages   |\n"
+"       -p | --profile number                     | Rist receive profile (0 = simple, 1 = main, 2 = advanced)|\n"
 #if HAVE_SRP_SUPPORT
 "       -F | --srpfile filepath                   | When in listening mode, use this file to hold the list   |\n"
 "                                                 | of usernames and passwords to validate against. Use the  |\n"
@@ -83,6 +85,7 @@ const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
 "       -u | --help-url                           | Show all the possible url options                        |\n"
 "   * == mandatory value \n"
 "Default values: %s \n"
+"       --profile 0               \\\n"
 "       --statsinterval 1000      \\\n"
 "       --verbose-level 6         \n";
 
@@ -277,6 +280,7 @@ int main (int argc, char **argv) {
 	enum rist_log_level loglevel = RIST_LOG_INFO;
 	char *remote_log_address = NULL;
 	int exitcode = 0;
+	enum rist_profile profile = RIST_PROFILE_SIMPLE;
 #ifdef _WIN32
 #define STDERR_FILENO 2
 	signal(SIGINT, intHandler);
@@ -324,6 +328,9 @@ int main (int argc, char **argv) {
 			if (cname != NULL)
 				goto usage;
 			cname = strdup(optarg);
+			break;
+		case 'p':
+			profile = atoi(optarg);
 			break;
 		case 'v':
 			loglevel = (enum rist_log_level) atoi(optarg);
@@ -379,7 +386,7 @@ usage:
 
 	struct rist_ctx *receiver_ctx;
 
-	if (rist_receiver_create(&receiver_ctx, RIST_PROFILE_SIMPLE, &logging_settings) != 0) {
+	if (rist_receiver_create(&receiver_ctx, profile, &logging_settings) != 0) {
 		rist_log(&logging_settings, RIST_LOG_ERROR, "Could not create rist receiver context\n");
 		exitcode = 1;
 		goto out;
