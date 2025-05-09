@@ -55,6 +55,7 @@ static int signalReceived = 0;
 static struct rist_logging_settings logging_settings = LOGGING_SETTINGS_INITIALIZER;
 enum rist_profile profile = RIST_PROFILE_MAIN;
 static int peer_connected_count = 0;
+static int noflow_counter = 0;
 
 #if HAVE_PROMETHEUS_SUPPORT
 struct rist_prometheus_stats *prom_stats_ctx;
@@ -148,7 +149,7 @@ const char help_str[] = "Usage: %s [OPTIONS] \nWhere OPTIONS are:\n"
 "          | --metrics-unix                       | Unix socket to expose metrics on                         |\n"
 #endif //HAVE_SOCK_UN_H
 #endif //HAVE_PROMETHEUS_SUPPORT
-"       -x | --session-timeout-exit               | Exit on Session Timeout                                  |\n"
+"       -f | --noflow-timeout-exit value (ms)     | Exit on no flow after Timeout                            |\n"
 "       -h | --help                               | Show this help                                           |\n"
 "       -u | --help-url                           | Show all the possible url options                        |\n"
 "   * == mandatory value \n"
@@ -172,7 +173,7 @@ struct rist_callback_object {
 	int tun;
 	int tun_mode;
 #endif
-	int session_timeout_exit;
+	int noflow_timeout_exit;
 };
 
 static inline void risttools_rtp_set_hdr(uint8_t *p_rtp, uint8_t i_type, uint16_t i_seqnum, uint32_t i_timestamp, uint32_t i_ssrc)
@@ -426,9 +427,17 @@ struct ristreceiver_flow_cumulative_stats *stats_list;
 
 static int session_timeout_callback(void *arg, uint32_t flow_id) {
 	struct rist_callback_object *callback_object = (void *) arg;
-	rist_log(&logging_settings, RIST_LOG_INFO, "Flow with id %"PRIu32" has timed out\n",  flow_id);
-	if (callback_object->session_timeout_exit)
-		exit(1);
+	if (flow_id == 0 && callback_object->noflow_timeout_exit > 0)
+	{
+		// It is triggered once per second when there is no flow (startup for example)
+		noflow_counter++;
+		rist_log(&logging_settings, RIST_LOG_INFO, "No flow detected for %d ms, deadline is %d ms\n", noflow_counter * 1000, callback_object->noflow_timeout_exit);
+		if (1000*noflow_counter >= callback_object->noflow_timeout_exit)
+		{
+			rist_log(&logging_settings, RIST_LOG_INFO, "Timeout limit reached, exiting\n", noflow_counter);
+			exit(1);
+		}
+	}
 	return 0;
 }
 
@@ -570,7 +579,7 @@ int main(int argc, char *argv[])
 
 	rist_log(&logging_settings, RIST_LOG_INFO, "Starting ristreceiver version: %s libRIST library: %s API version: %s\n", RISTRECEIVER_VERSION, librist_version(), librist_api_version());
 
-	while ((c = getopt_long(argc, argv, "r:i:o:b:s:e:t:m:p:S:v:F:c:h:uMx", long_options, &option_index)) != -1) {
+	while ((c = getopt_long(argc, argv, "r:i:o:b:s:e:t:m:p:S:v:F:c:h:x:uM", long_options, &option_index)) != -1) {
 		switch (c) {
 		case 'i':
 			inputurl = strdup(optarg);
@@ -701,7 +710,7 @@ int main(int argc, char *argv[])
 			cleanup_tools_config(yaml_config);
 			break;
 		case 'x':
-			callback_object.session_timeout_exit = 1;
+			callback_object.noflow_timeout_exit = atoi(optarg);
 			break;
 		case 'h':
 			/* Fall through */

@@ -4015,6 +4015,7 @@ PTHREAD_START_FUNC(receiver_pthread_protocol, arg)
 	struct rist_receiver *ctx = (struct rist_receiver *) arg;
 	uint64_t now = timestampNTP_u64();
 	int max_oobperloop = 100;
+	uint64_t no_flow_time_check = timestampNTP_u64();
 
 	uint64_t rist_nack_interval = (uint64_t)ctx->common.rist_max_jitter;
 	int max_jitter_ms = ctx->common.rist_max_jitter / RIST_CLOCK;
@@ -4037,7 +4038,16 @@ PTHREAD_START_FUNC(receiver_pthread_protocol, arg)
 		{
 			// stats and session timeout timer
 			struct rist_flow *f = ctx->common.FLOWS;
+			if (!f)
+			{
+				// no flow timeout callback
+				if ((now - no_flow_time_check) > ONE_SECOND && ctx->receiver_session_timeout_callback) {
+					no_flow_time_check = now;
+					ctx->receiver_session_timeout_callback(ctx->receiver_session_timeout_callback_argument, 0);
+				}
+			}
 			while (f) {
+				no_flow_time_check = now;
 				pthread_mutex_lock(&f->mutex);
 				if (!f->receiver_queue_has_items) {
 					pthread_mutex_unlock(&f->mutex);
