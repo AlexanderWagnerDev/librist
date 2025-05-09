@@ -888,7 +888,6 @@ static void receiver_output(struct rist_receiver *ctx, struct rist_flow *f)
 			f->stats_instant.lost += holes;
 			pthread_mutex_unlock(&ctx->common.stats_lock);
 			output_idx = counter;
-			// TODO: this is where the automation tests randomly fail (receover finds an empty buffer element)
 			rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
 					"Empty buffer element, flushing %"PRIu32" hole(s), now at index %zu, size is %zu\n",
 					holes, counter, atomic_load_explicit(&f->receiver_queue_size, memory_order_acquire));
@@ -3793,15 +3792,6 @@ static void store_peer_settings(const struct rist_peer_config *settings, struct 
 	peer->config.recovery_length_min = settings->recovery_length_min;
 	peer->config.recovery_length_max = settings->recovery_length_max;
 	peer->config.recovery_reorder_buffer = settings->recovery_reorder_buffer;
-	if (settings->recovery_rtt_min < RIST_RTT_MIN) {
-		rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "rtt_min is too small (%u), using %dms instead\n",
-				settings->recovery_rtt_min, RIST_RTT_MIN);
-		recovery_rtt_min = RIST_RTT_MIN;
-	} else {
-		recovery_rtt_min = settings->recovery_rtt_min;
-	}
-	peer->config.recovery_rtt_min = recovery_rtt_min * RIST_CLOCK;
-	peer->config.recovery_rtt_max = settings->recovery_rtt_max * RIST_CLOCK;
 	/* Set buffer-bloating */
 	if (settings->min_retries < 2 || settings->min_retries > 100) {
 		rist_log_priv(get_cctx(peer), RIST_LOG_INFO,
@@ -3819,6 +3809,29 @@ static void store_peer_settings(const struct rist_peer_config *settings, struct 
 	} else {
 		max_retries = settings->max_retries;
 	}
+	if (settings->recovery_rtt_min < RIST_RTT_MIN) {
+		rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "rtt_min is too small (%u), using %dms instead\n",
+				settings->recovery_rtt_min, RIST_RTT_MIN);
+		recovery_rtt_min = RIST_RTT_MIN;
+	} else {
+		recovery_rtt_min = settings->recovery_rtt_min;
+	}
+	// Override rtt min if value is unreasonable
+	uint32_t min_rtt = settings->recovery_length_min / max_retries;
+	if (recovery_rtt_min < min_rtt) {
+		rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "rtt_min is too small (%u) for the buffer size, using %u/%u = %dms instead\n",
+			recovery_rtt_min, settings->recovery_length_min, max_retries, min_rtt);
+		recovery_rtt_min = min_rtt;
+	}
+	if (settings->recovery_rtt_max < recovery_rtt_min)
+	{
+		rist_log_priv(get_cctx(peer), RIST_LOG_INFO, "rtt_max is too small (%u), using %u instead\n",
+				settings->recovery_rtt_max, recovery_rtt_min);
+				peer->config.recovery_rtt_max = recovery_rtt_min * RIST_CLOCK;
+	}
+	else
+		peer->config.recovery_rtt_max = settings->recovery_rtt_max * RIST_CLOCK;
+	peer->config.recovery_rtt_min = recovery_rtt_min * RIST_CLOCK;
 	peer->config.congestion_control_mode = settings->congestion_control_mode;
 	peer->config.min_retries = min_retries;
 	peer->config.max_retries = max_retries;
