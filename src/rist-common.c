@@ -3336,17 +3336,19 @@ PTHREAD_START_FUNC(udp_pacing_pthread, arg)
 
 	while(!atomic_load_explicit(&cctx->shutdown, memory_order_acquire)) {
 
+		size_t idx = ((size_t)atomic_load_explicit(&cctx->udp_pacing_queue_read_index, memory_order_acquire) + 1)& (cctx->udp_pacing_queue_max-1);
 		// No data in the queue, sleep and loop
-		if (atomic_load_explicit(&cctx->udp_pacing_queue_read_index, memory_order_acquire) == atomic_load_explicit(&cctx->udp_pacing_queue_write_index, memory_order_acquire)) {
+		if (idx == atomic_load_explicit(&cctx->udp_pacing_queue_write_index, memory_order_acquire)) {
 			usleep(packet_spacing_8avg / 8);
 			continue;
 		}
 
 		// Extract udp pacing data from the queue
-		struct rist_buffer *udp_pacing_buffer = cctx->udp_pacing_queue[atomic_load_explicit(&cctx->udp_pacing_queue_read_index, memory_order_acquire)];
-		if (!udp_pacing_buffer->data) {
-			rist_log_priv(cctx, RIST_LOG_ERROR, "Null udp pacing buffer, skipping!!!\n");
-			atomic_store_explicit(&cctx->udp_pacing_queue_read_index, atomic_load_explicit(&cctx->udp_pacing_queue_read_index, memory_order_acquire) + 1, memory_order_release);
+		struct rist_buffer *udp_pacing_buffer = cctx->udp_pacing_queue[idx];
+		if (!udp_pacing_buffer || !udp_pacing_buffer->data) {
+			// This happens only during shutdown
+			//rist_log_priv(cctx, RIST_LOG_ERROR, "Null udp pacing buffer, skipping!!!\n");
+			atomic_store_explicit(&cctx->udp_pacing_queue_read_index, idx, memory_order_release);
 			continue;
 		}
 		uint8_t *payload = udp_pacing_buffer->data;
@@ -3375,29 +3377,34 @@ PTHREAD_START_FUNC(udp_pacing_pthread, arg)
 		}
 
 		// Send data to socket
-		if (cctx->profile == RIST_PROFILE_SIMPLE)
-			ret = sendto(p->sd,(const char*)&payload[RIST_MAX_PAYLOAD_OFFSET], udp_pacing_buffer->size, 0, &(p->u.address), p->address_len);
-		else
-		{
-			uint32_t src_port = udp_pacing_buffer->src_port;
-			uint32_t dst_port = udp_pacing_buffer->dst_port;
-			uint32_t payload_type = udp_pacing_buffer->type;
-			uint16_t proto_type;
-			if (RIST_UNLIKELY(payload_type == RIST_PAYLOAD_TYPE_DATA_OOB))
-				proto_type = RIST_GRE_PROTOCOL_TYPE_FULL;
-			else
-				proto_type = RIST_GRE_PROTOCOL_TYPE_REDUCED;
-			ret = _librist_proto_gre_send_data(p, payload_type, proto_type, &payload[RIST_MAX_PAYLOAD_OFFSET], udp_pacing_buffer->size, src_port, dst_port, p->rist_gre_version);
+		if (RIST_UNLIKELY(!p || atomic_load_explicit(&p->shutdown, memory_order_acquire))) {
+			// skip this one as peer destination is shutting down or null
 		}
-		if (RIST_UNLIKELY(ret <= 0)) {
-			rist_log_priv(cctx, RIST_LOG_ERROR, "\tUDP Pacing Send failed, data loss: errno=%d, ret=%d, socket=%d\n", errno, ret, p->sd);
-			// TODO: track this error as data loss for sender in stats
+		else {
+			if (cctx->profile == RIST_PROFILE_SIMPLE)
+				ret = sendto(p->sd,(const char*)&payload[RIST_MAX_PAYLOAD_OFFSET], udp_pacing_buffer->size, 0, &(p->u.address), p->address_len);
+			else
+			{
+				uint32_t src_port = udp_pacing_buffer->src_port;
+				uint32_t dst_port = udp_pacing_buffer->dst_port;
+				uint32_t payload_type = udp_pacing_buffer->type;
+				uint16_t proto_type;
+				if (RIST_UNLIKELY(payload_type == RIST_PAYLOAD_TYPE_DATA_OOB))
+					proto_type = RIST_GRE_PROTOCOL_TYPE_FULL;
+				else
+					proto_type = RIST_GRE_PROTOCOL_TYPE_REDUCED;
+				ret = _librist_proto_gre_send_data(p, payload_type, proto_type, &payload[RIST_MAX_PAYLOAD_OFFSET], udp_pacing_buffer->size, src_port, dst_port, p->rist_gre_version);
+			}
+			if (RIST_UNLIKELY(ret <= 0)) {
+				rist_log_priv(cctx, RIST_LOG_ERROR, "\tUDP Pacing Send failed, data loss: errno=%d, ret=%d, socket=%d\n", errno, ret, p->sd);
+				// TODO: track this error as data loss for sender in stats
+			}
 		}
 		cctx->udp_pacing_queue_bytesize -= udp_pacing_buffer->size;
 		free(udp_pacing_buffer->data);
 		udp_pacing_buffer->data = NULL;
 		atomic_store_explicit(&cctx->udp_pacing_queue_size, atomic_load_explicit(&cctx->udp_pacing_queue_size, memory_order_acquire) - 1, memory_order_release);
-		atomic_store_explicit(&cctx->udp_pacing_queue_read_index, atomic_load_explicit(&cctx->udp_pacing_queue_read_index, memory_order_acquire) + 1, memory_order_release);
+		atomic_store_explicit(&cctx->udp_pacing_queue_read_index, idx, memory_order_release);
 	}
 
 	uint16_t index = 0;
