@@ -40,7 +40,7 @@
 #define RIST_SERVER_QUEUE_BUFFERS ((UINT16_SIZE) * 8)
 #define RIST_RETRY_QUEUE_BUFFERS ((UINT16_SIZE) * 4)
 #define RIST_OOB_QUEUE_BUFFERS ((UINT16_SIZE) * 2)
-#define RIST_UDP_PACING_QUEUE_BUFFERS ((UINT16_SIZE) * 14)
+#define RIST_UDP_PACING_QUEUE_BUFFERS ((UINT16_SIZE) * 16)
 #define RIST_DATAOUT_QUEUE_BUFFERS (1024)
 // This will restrict the use of the library to the configured maximum packet size
 #define RIST_MAX_PACKET_SIZE (10000)
@@ -347,7 +347,7 @@ struct rist_common_ctx {
 	uint16_t oob_queue_write_index;
 
 	pthread_rwlock_t udp_pacing_queue_lock;
-	struct rist_buffer *udp_pacing_queue[RIST_UDP_PACING_QUEUE_BUFFERS]; /* udp pacing queue */
+	struct rist_buffer udp_pacing_queue[RIST_UDP_PACING_QUEUE_BUFFERS]; /* udp pacing queue */
 	size_t udp_pacing_queue_bytesize;
 	atomic_ulong udp_pacing_queue_size;
 	atomic_ulong udp_pacing_queue_read_index;
