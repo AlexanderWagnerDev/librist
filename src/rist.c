@@ -185,6 +185,7 @@ int rist_receiver_data_read2(struct rist_ctx *rist_ctx, struct rist_data_block *
 		return 0;
 	}
 
+	pthread_mutex_lock(&f->mutex);
 	unsigned long dataout_read_index = atomic_load_explicit(&f->dataout_fifo_queue_read_index, memory_order_relaxed);
 	size_t write_index = atomic_load_explicit(&f->dataout_fifo_queue_write_index, memory_order_acquire);
 	if (write_index != dataout_read_index)
@@ -199,7 +200,12 @@ int rist_receiver_data_read2(struct rist_ctx *rist_ctx, struct rist_data_block *
 			}
 		} while (num > 0);
 	}
-	assert(!(data_block == NULL && num > 0));
+	pthread_mutex_unlock(&f->mutex);
+	if (data_block == NULL && num > 0)
+	{
+		rist_log_priv3(RIST_LOG_ERROR, "[rist_receiver_data_read2] data_block is NULL but num > 0 ! num=%zd, dataout_read_index=%lu, write_index=%zu\n", num, dataout_read_index, write_index);
+		return -3;
+	}
 
 	*data_buffer = data_block;
 
