@@ -3344,13 +3344,7 @@ PTHREAD_START_FUNC(udp_pacing_pthread, arg)
 		}
 
 		// Extract udp pacing data from the queue
-		struct rist_buffer *udp_pacing_buffer = cctx->udp_pacing_queue[idx];
-		if (!udp_pacing_buffer || !udp_pacing_buffer->data) {
-			// This happens only during shutdown
-			//rist_log_priv(cctx, RIST_LOG_ERROR, "Null udp pacing buffer, skipping!!!\n");
-			atomic_store_explicit(&cctx->udp_pacing_queue_read_index, idx, memory_order_release);
-			continue;
-		}
+		struct rist_buffer *udp_pacing_buffer = &cctx->udp_pacing_queue[idx];
 		uint8_t *payload = udp_pacing_buffer->data;
 		struct rist_peer *p = udp_pacing_buffer->peer;
 
@@ -3401,30 +3395,24 @@ PTHREAD_START_FUNC(udp_pacing_pthread, arg)
 			}
 		}
 		cctx->udp_pacing_queue_bytesize -= udp_pacing_buffer->size;
-		free(udp_pacing_buffer->data);
+		free(payload);
 		udp_pacing_buffer->data = NULL;
 		atomic_store_explicit(&cctx->udp_pacing_queue_size, atomic_load_explicit(&cctx->udp_pacing_queue_size, memory_order_acquire) - 1, memory_order_release);
 		atomic_store_explicit(&cctx->udp_pacing_queue_read_index, idx, memory_order_release);
 	}
 
+	// Free any remaining udp pacing buffers
 	uint16_t index = 0;
 	while (1) {
 		if (index == cctx->udp_pacing_queue_write_index) {
-			break;
+				break;
 		}
-		struct rist_buffer *current_buffer = cctx->udp_pacing_queue[index];
-		if (current_buffer->data) {
-			free(current_buffer->data);
-			current_buffer->data = NULL;
-		}
-		if (current_buffer) {
-			free(current_buffer);
-			current_buffer = NULL;
-		}
+		if (cctx->udp_pacing_queue[index].data)
+			free(cctx->udp_pacing_queue[index].data);
 		index++;
 	}
+	
 	cctx->udp_pacing_queue_bytesize = 0;
-
 	rist_log_priv(cctx, RIST_LOG_INFO, "Exiting udp pacing loop\n");
 	atomic_store_explicit(&cctx->shutdown, atomic_load_explicit(&cctx->shutdown, memory_order_acquire) + 1, memory_order_release);
 
@@ -3555,7 +3543,7 @@ int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile)
 	ctx->stats_report_time = 0;
 
 	ctx->udp_pacing_queue_max = RIST_UDP_PACING_QUEUE_BUFFERS;
-	atomic_init(&ctx->udp_pacing_queue_write_index, 0);
+	atomic_init(&ctx->udp_pacing_queue_write_index, 1);
 	atomic_init(&ctx->udp_pacing_queue_read_index, 0);
 	if (pthread_rwlock_init(&ctx->udp_pacing_queue_lock, NULL) != 0)
 	{
