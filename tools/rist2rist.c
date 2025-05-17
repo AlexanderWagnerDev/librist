@@ -304,7 +304,7 @@ int main (int argc, char **argv) {
 
 	int option_index;
 	int c;
-	while ((c = getopt_long(argc, argv, "r:i:o:s:e:N:v:S:h:u", long_options, &option_index)) != -1) {
+	while ((c = getopt_long(argc, argv, "r:i:o:s:e:N:v:S:p:h:u", long_options, &option_index)) != -1) {
 		switch (c) {
 		case 'i':
 			if (inputurl != NULL)
