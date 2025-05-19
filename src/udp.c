@@ -28,12 +28,12 @@
 #include <assert.h>
 #include <fcntl.h>
 
-void rist_clean_sender_enqueue(struct rist_sender *ctx)
+void rist_clean_sender_enqueue(struct rist_sender *ctx, int maxcount)
 {
 	int delete_count = 1;
 
-	// Delete old packets (max 10 entries per function call)
-	while (delete_count++ < 10) {
+	// Delete old packets (maxcount entries per function call)
+	while (delete_count++ < maxcount) {
 		struct rist_buffer *b = ctx->sender_queue[ctx->sender_queue_delete_index];
 
 		/* our buffer size is zero, it must be just building up */

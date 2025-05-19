@@ -3497,7 +3497,7 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 				nacks_next_time += ctx->common.rist_max_jitter;
 			}
 			/* perform queue cleanup */
-			rist_clean_sender_enqueue(ctx);
+			rist_clean_sender_enqueue(ctx, max_dataperloop);
 		}
 		pthread_mutex_unlock(&ctx->queue_lock);
 		// Send oob data
