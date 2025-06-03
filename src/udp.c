@@ -57,6 +57,7 @@ void rist_clean_sender_enqueue(struct rist_sender *ctx, int maxcount)
 
 		/* perform the deletion based on the buffer size plus twice the configured/measured avg_rtt */
 		uint64_t delay = (timestampNTP_u64() - b->time) / RIST_CLOCK;
+		ctx->sender_queue_timelength = delay;
 		if (delay < ctx->sender_recover_min_time) {
 			break;
 		}
@@ -67,6 +68,7 @@ void rist_clean_sender_enqueue(struct rist_sender *ctx, int maxcount)
 
 		/* now delete it */
 		ctx->sender_queue_bytesize -= b->size;
+		ctx->sender_queue_size--;
 		free_rist_buffer(&ctx->common, b);
 		ctx->sender_queue[ctx->sender_queue_delete_index] = NULL;
 		ctx->sender_queue_delete_index = (ctx->sender_queue_delete_index + 1)& (ctx->sender_queue_max -1);
@@ -685,6 +687,7 @@ int rist_sender_enqueue(struct rist_sender *ctx, const void *data, size_t len, u
 	}
 	ctx->sender_queue[sender_write_index]->seq_rtp = (uint16_t)seq_rtp;
 	ctx->sender_queue_bytesize += len;
+	ctx->sender_queue_size++;
 	atomic_store_explicit(&ctx->sender_queue_write_index, (sender_write_index + 1) & (ctx->sender_queue_max - 1), memory_order_release);
 	pthread_mutex_unlock(&ctx->queue_lock);
 

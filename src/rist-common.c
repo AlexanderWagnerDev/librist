@@ -4095,6 +4095,7 @@ void rist_sender_destroy_local(struct rist_sender *ctx)
 		}
 		if (b) {
 			ctx->sender_queue_bytesize -= b->size;
+			ctx->sender_queue_size--;
 			free_rist_buffer(&ctx->common, b);
 			ctx->sender_queue[ctx->sender_queue_delete_index] = NULL;
 		}
