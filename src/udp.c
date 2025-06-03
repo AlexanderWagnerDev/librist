@@ -82,14 +82,17 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload
 	size_t len;
 	size_t hdr_len = 0;
 	ssize_t ret = 0;
-	uint8_t error_type = 0;
 
 	uint8_t *_payload = NULL;
 	_payload = payload;
 
 	// TODO: write directly on the payload to make it faster
 	uint8_t header_buf[RIST_MAX_HEADER_SIZE] = {0};
-	if (payload_type != RIST_PAYLOAD_TYPE_DATA_OOB) {
+	uint16_t proto_type;
+	if (RIST_UNLIKELY(payload_type == RIST_PAYLOAD_TYPE_DATA_OOB)) {
+		proto_type = RIST_GRE_PROTOCOL_TYPE_FULL;
+	} else {
+		proto_type = RIST_GRE_PROTOCOL_TYPE_REDUCED;
 		struct rist_protocol_hdr *hdr = (void *) (header_buf);
 		hdr->src_port = htobe16(src_port);
 		hdr->dst_port = htobe16(dst_port);
@@ -126,6 +129,7 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload
 		data = _payload - hdr_len + RIST_GRE_PROTOCOL_REDUCED_SIZE;
 	}
 
+
 	// TODO: compare p->sender_ctx->sender_queue_read_index and p->sender_ctx->sender_queue_write_index
 	// and warn when the difference is a multiple of 10 (slow CPU or overtaxed algorithm)
 	// The difference should always stay very low < 10
@@ -140,38 +144,14 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload
 		}
 	}
 
-	/* insert into udp pacing fifo queue */
-	ret = len;
-	if (atomic_load_explicit(&ctx->shutdown, memory_order_acquire))
-		goto out;
-	pthread_rwlock_wrlock(&ctx->udp_pacing_queue_lock);
-	size_t udp_pacing_write_index = atomic_load_explicit(&ctx->udp_pacing_queue_write_index, memory_order_acquire);
-	if ((udp_pacing_write_index + 1) == atomic_load_explicit(&ctx->udp_pacing_queue_read_index, memory_order_acquire))
-	{
-		pthread_rwlock_unlock(&ctx->udp_pacing_queue_lock);
-		error_type = 1;
-		goto out;
-	}
-	ctx->udp_pacing_queue[udp_pacing_write_index] = rist_new_buffer(ctx, (const char*)data, len, RIST_PAYLOAD_TYPE_UDP_PACING, 0, 0, 0, 0);
-	if (RIST_UNLIKELY(!ctx->udp_pacing_queue[udp_pacing_write_index])) {
-		pthread_rwlock_unlock(&ctx->udp_pacing_queue_lock);
-		error_type = 2;
-		goto out;
-	}
-	ctx->udp_pacing_queue[udp_pacing_write_index]->peer = p;
-	ctx->udp_pacing_queue_bytesize += len;
-	atomic_store_explicit(&ctx->udp_pacing_queue_size, atomic_load_explicit(&ctx->udp_pacing_queue_size, memory_order_acquire) + 1, memory_order_release);
-	atomic_store_explicit(&ctx->udp_pacing_queue_write_index, (udp_pacing_write_index + 1) & (ctx->udp_pacing_queue_max - 1), memory_order_release);
-	pthread_rwlock_unlock(&ctx->udp_pacing_queue_lock);
+	if (ctx->profile == RIST_PROFILE_SIMPLE)
+		ret = sendto(p->sd,(const char*)data, len, 0, &(p->u.address), p->address_len);
+	else
+		ret = _librist_proto_gre_send_data(p, payload_type, proto_type, data, len, src_port, dst_port, p->rist_gre_version);
 
 out:
-	// TODO, I am not reporting stats for send errors
 	if (RIST_UNLIKELY(ret <= 0)) {
 		rist_log_priv(ctx, RIST_LOG_ERROR, "\tSend failed: errno=%d, ret=%d, socket=%d\n", errno, ret, p->sd);
-	} else if (RIST_UNLIKELY(error_type == 1)) {
-		rist_log_priv(ctx, RIST_LOG_ERROR, "\tSend failed, udp pacing queue is full, socket=%d\n", p->sd);
-	} else if (RIST_UNLIKELY(error_type == 2)) {
-		rist_log_priv(ctx, RIST_LOG_ERROR, "\tCould not create udp pacing queue packet buffer, OOM\n");
 	} else {
 		p->stats_sender_instant.sent++;
 		p->stats_receiver_instant.sent_rtcp++;
@@ -183,14 +163,14 @@ out:
 /* This function is used by receiver for all and by sender only for rist-data and oob-data */
 int rist_send_common_rtcp(struct rist_peer *p, uint8_t payload_type, uint8_t *payload, size_t payload_len, uint64_t source_time, uint16_t src_port, uint16_t dst_port, uint32_t seq_rtp)
 {
-	struct rist_common_ctx *cctx = get_cctx(p);
-
 	// This can only and will most likely be zero for data packets. RTCP should always have a value.
+	assert(payload_type != RIST_PAYLOAD_TYPE_DATA_RAW && payload_type != RIST_PAYLOAD_TYPE_DATA_RAW_RTP_EXT && payload_type != RIST_PAYLOAD_TYPE_DATA_OOB ? dst_port != 0 : 1);
 	if (dst_port == 0)
 		dst_port = p->config.virt_dst_port;
 	if (src_port == 0)
 		src_port = 32768 + p->adv_peer_id;
 
+	struct rist_common_ctx *cctx = get_cctx(p);
 	if (p->sd < 0 || !p->address_len) {
 		rist_log_priv(cctx, RIST_LOG_ERROR, "rist_send_common_rtcp failed\n");
 		return -1;
@@ -697,12 +677,6 @@ int rist_sender_enqueue(struct rist_sender *ctx, const void *data, size_t len, u
 	/* insert into sender fifo queue */
 	pthread_mutex_lock(&ctx->queue_lock);
 	size_t sender_write_index = atomic_load_explicit(&ctx->sender_queue_write_index, memory_order_acquire);
-	if ((sender_write_index + 1) == atomic_load_explicit(&ctx->sender_queue_read_index, memory_order_acquire))
-	{
-		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "\t Sender buffer is full, dropping packet\n");
-		pthread_mutex_unlock(&ctx->queue_lock);
-		return -1;
-	}
 	ctx->sender_queue[sender_write_index] = rist_new_buffer(&ctx->common, payload, len, payload_type, 0, datagram_time, src_port, dst_port);
 	if (RIST_UNLIKELY(!ctx->sender_queue[sender_write_index])) {
 		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "\t Could not create packet buffer inside sender buffer, OOM, decrease max bitrate or buffer time length\n");
@@ -851,6 +825,7 @@ ssize_t rist_retry_dequeue(struct rist_sender *ctx)
 
 	// If they request a non-sense seq number, we will catch it when we check the seq number against
 	// the one on that buffer position and it does not match
+
 	size_t idx = rist_sender_index_get(ctx, retry->seq);
 	if (RIST_UNLIKELY(ctx->sender_queue[idx] == NULL)) {
 		rist_log_priv(&ctx->common, RIST_LOG_DEBUG,

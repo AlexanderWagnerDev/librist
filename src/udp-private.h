@@ -22,7 +22,6 @@
 #define RIST_PAYLOAD_TYPE_DATA_OOB          0x6 // Out-of-band data
 #define RIST_PAYLOAD_TYPE_DATA_RAW_RTP_EXT  0x7
 #define RIST_PAYLOAD_TYPE_EAPOL				0x8
-#define RIST_PAYLOAD_TYPE_UDP_PACING        0x9
 
 // Maximum offset before the payload that the code can use to put in headers
 #define RIST_MAX_PAYLOAD_OFFSET (sizeof(struct rist_gre_key_seq) + sizeof(struct rist_protocol_hdr))
