@@ -152,29 +152,16 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload
 		error_type = 1;
 		goto out;
 	}
-	if (data != NULL && len > 0)
-	{
-		struct rist_buffer *udp_pacing_buffer = &ctx->udp_pacing_queue[udp_pacing_write_index];
-		udp_pacing_buffer->type = RIST_PAYLOAD_TYPE_UDP_PACING;
-		udp_pacing_buffer->peer = p;			
-		udp_pacing_buffer->data = malloc(len + RIST_MAX_PAYLOAD_OFFSET);
-		if (!ctx->udp_pacing_queue[udp_pacing_write_index].data)
-		{
-			pthread_rwlock_unlock(&ctx->udp_pacing_queue_lock);
-			fprintf(stderr, "OOM on udp_pacing_queue\n");
-			error_type = 2;
-			goto out;
-		}
-		else
-		{
-			memcpy((uint8_t *)udp_pacing_buffer->data + RIST_MAX_PAYLOAD_OFFSET, data, len);
-			udp_pacing_buffer->alloc_size = len;
-			udp_pacing_buffer->size = len;	
-			ctx->udp_pacing_queue_bytesize += len;
-			atomic_store_explicit(&ctx->udp_pacing_queue_size, atomic_load_explicit(&ctx->udp_pacing_queue_size, memory_order_acquire) + 1, memory_order_release);
-			atomic_store_explicit(&ctx->udp_pacing_queue_write_index, (udp_pacing_write_index + 1) & (ctx->udp_pacing_queue_max - 1), memory_order_release);
-		}
+	ctx->udp_pacing_queue[udp_pacing_write_index] = rist_new_buffer(ctx, (const char*)data, len, RIST_PAYLOAD_TYPE_UDP_PACING, 0, 0, 0, 0);
+	if (RIST_UNLIKELY(!ctx->udp_pacing_queue[udp_pacing_write_index])) {
+		pthread_rwlock_unlock(&ctx->udp_pacing_queue_lock);
+		error_type = 2;
+		goto out;
 	}
+	ctx->udp_pacing_queue[udp_pacing_write_index]->peer = p;
+	ctx->udp_pacing_queue_bytesize += len;
+	atomic_store_explicit(&ctx->udp_pacing_queue_size, atomic_load_explicit(&ctx->udp_pacing_queue_size, memory_order_acquire) + 1, memory_order_release);
+	atomic_store_explicit(&ctx->udp_pacing_queue_write_index, (udp_pacing_write_index + 1) & (ctx->udp_pacing_queue_max - 1), memory_order_release);
 	pthread_rwlock_unlock(&ctx->udp_pacing_queue_lock);
 
 out:
