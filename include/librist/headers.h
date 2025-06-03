@@ -18,6 +18,9 @@
 extern "C" {
 #endif
 
+/* Maximum number of udp socket send retries on EAGAIN */
+#define RIST_MAX_SEND_RETRIES 10
+
 /* Used for cname, miface and shared secret */
 #define RIST_MAX_STRING_SHORT 128
 /* Used for url/address */

@@ -153,10 +153,19 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 	msghdr.msg_control = NULL;
 	msghdr.msg_controllen = 0;
 	msghdr.msg_flags = 0;
-	ret = sendmsg(p->sd, &msghdr, MSG_DONTWAIT);
-	if (RIST_UNLIKELY(ret < 0)) {
-		errorcode = errno;
-	}
+	// retry when kernel buffer is full instead of dropping packet (EAGAIN)
+	int retries = 0;
+	do {
+		ret = sendmsg(p->sd, &msghdr, MSG_DONTWAIT);
+		if (RIST_UNLIKELY(ret < 0)) {
+			errorcode = errno;
+			retries++;
+		}
+		else {
+			errorcode = 0;
+			break;
+		}
+	} while (errorcode == EAGAIN && retries < RIST_MAX_SEND_RETRIES);
 #else
 	WSAMSG msghdr = { 0 };
 	WSABUF iov[2];
@@ -169,12 +178,19 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 	msghdr.namelen = p->address_len;
 	msghdr.lpBuffers = iov;
 	msghdr.dwBufferCount = 2;
-
 	ret = payload_len + hdr_len;
-	if (RIST_UNLIKELY(WSASendMsg(p->sd, &msghdr, MSG_DONTWAIT, &dwBytes, NULL, NULL) != 0)) {
-		ret = -1;
-		errorcode = WSAGetLastError();
-	}
+	int retries = 0;
+	do {
+		if (RIST_UNLIKELY(WSASendMsg(p->sd, &msghdr, MSG_DONTWAIT, &dwBytes, NULL, NULL) != 0)) {
+			ret = -1;
+			errorcode = WSAGetLastError();
+			retries++;
+		}
+		else {
+			errorcode = 0;
+			break;
+		}
+	} while (errorcode == WSAEWOULDBLOCK && retries < RIST_MAX_SEND_RETRIES);
 #endif
 
 	if (modifying_payload) {
@@ -182,8 +198,11 @@ ssize_t _librist_proto_gre_send_data(struct rist_peer *p, uint8_t payload_type, 
 	}
 
 	if (RIST_UNLIKELY(errorcode)) {
+		struct rist_common_ctx *ctx = get_cctx(p);
+        rist_log_priv(ctx, RIST_LOG_ERROR, "Send failed: errno=%d, reason=%s, ret=%d, socket=%d, retries=%d\n", errorcode, strerror(errorcode), ret, p->sd, retries);
+	} else if (RIST_UNLIKELY(retries > RIST_MAX_SEND_RETRIES / 5)) {
         struct rist_common_ctx *ctx = get_cctx(p);
-        rist_log_priv(ctx, RIST_LOG_ERROR, "Send failed: errno=%d, reason=%s, ret=%d, socket=%d\n", errorcode, strerror(errorcode), ret, p->sd);
+        rist_log_priv(ctx, RIST_LOG_WARN, "Send Succeded after retries=%d, ret=%d, socket=%d\n", retries, ret, p->sd);
 	}
 
 	return ret;

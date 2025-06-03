@@ -146,8 +146,25 @@ size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload
 		}
 	}
 
-	if (ctx->profile == RIST_PROFILE_SIMPLE)
-		ret = sendto(p->sd,(const char*)data, len, 0, &(p->u.address), p->address_len);
+	int retries = 0;
+	int errorcode = 0;
+	if (ctx->profile == RIST_PROFILE_SIMPLE) {
+		// retry when kernel buffer is full instead of dropping packet (EAGAIN)
+		do {
+			ret = sendto(p->sd,(const char*)data, len, 0, &(p->u.address), p->address_len);
+			if (RIST_UNLIKELY(ret < 0))
+			{
+				errorcode = errno;
+				retries++;
+			}
+			else {
+				errorcode = 0;
+				break;
+			}
+		} while (errorcode == EAGAIN && retries < RIST_MAX_SEND_RETRIES);
+		if (RIST_UNLIKELY(retries > (RIST_MAX_SEND_RETRIES / 5)))
+			rist_log_priv(ctx, RIST_LOG_WARN, "UDP Pacing Send Succeded after retries=%d, ret=%d, socket=%d\n", retries, ret, p->sd);
+	}
 	else
 		ret = _librist_proto_gre_send_data(p, payload_type, proto_type, data, len, src_port, dst_port, p->rist_gre_version);
 
