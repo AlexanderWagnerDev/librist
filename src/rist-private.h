@@ -95,9 +95,10 @@ struct rist_buffer {
 
 	uint8_t fragment_number;
 	uint8_t fragment_final;
-	// TODO: These three are only used by sender ... do I split buffer into sender and receiver?
+	// TODO: These four are only used by sender ... do I split buffer into sender and receiver?
 	uint64_t last_retry_request;
 	uint8_t transmit_count;
+	uint16_t ts_null_bytes;
 	struct rist_peer *peer;
 
 	struct rist_buffer *next_free;
@@ -165,12 +166,14 @@ struct rist_peer_sender_stats {
 	uint32_t bloat_skip;
 	uint32_t bandwidth_skip;
 	uint32_t retrans_skip;
+	uint64_t ts_null;
 };
 
 struct rist_peer_receiver_stats {
 	uint32_t sent_rtcp;
 	uint32_t received_rtcp;
 	uint64_t received;
+	uint64_t ts_null;
 };
 
 struct nacks {
@@ -204,6 +207,9 @@ struct rist_flow {
 	struct rist_peer_flow_stats stats_instant;
 	struct rist_peer_flow_stats stats_total;//TODO: use the total stats!
 	struct rist_bandwidth_estimation bw;
+	struct rist_bandwidth_estimation bw_tsnull;
+	struct rist_bandwidth_estimation bw_rejected;
+	struct rist_bandwidth_estimation bw_retries;
 	uint64_t stats_next_time;
 	uint64_t checks_next_time;
 
@@ -586,6 +592,7 @@ struct rist_peer {
 	/* bw estimation */
 	struct rist_bandwidth_estimation bw;
 	struct rist_bandwidth_estimation retry_bw;
+	struct rist_bandwidth_estimation ts_nulls_bw;
 
 	/* shutting down flag */
 	atomic_bool shutdown;
@@ -598,6 +605,7 @@ struct rist_peer {
 	uint64_t last_pkt_received;
 	uint64_t last_sender_report_time;
 	uint64_t last_sender_report_ts;
+	uint64_t ts_null_bytes;
 
 	char *url;
 	char cname[RIST_MAX_HOSTNAME];

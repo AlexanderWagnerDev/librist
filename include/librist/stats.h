@@ -100,7 +100,7 @@ enum rist_stats_type
 	RIST_STATS_RECEIVER_FLOW
 };
 
-#define RIST_STATS_VERSION (0)
+#define RIST_STATS_VERSION (1)
 
 struct rist_stats
 {
