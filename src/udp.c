@@ -28,55 +28,6 @@
 #include <assert.h>
 #include <fcntl.h>
 
-void rist_clean_sender_enqueue(struct rist_sender *ctx, int maxcount)
-{
-	int delete_count = 1;
-
-	// Delete old packets (maxcount entries per function call)
-	while (delete_count++ < maxcount) {
-		struct rist_buffer *b = ctx->sender_queue[ctx->sender_queue_delete_index];
-
-		/* our buffer size is zero, it must be just building up */
-		if ((size_t)atomic_load_explicit(&ctx->sender_queue_write_index, memory_order_acquire) == ctx->sender_queue_delete_index) {
-			break;
-		}
-
-		size_t safety_counter = 0;
-		while (!b && ((ctx->sender_queue_delete_index + 1)& (ctx->sender_queue_max -1)) != atomic_load_explicit(&ctx->sender_queue_write_index, memory_order_acquire)) {
-			ctx->sender_queue_delete_index = (ctx->sender_queue_delete_index + 1)& (ctx->sender_queue_max -1);
-			// This should never happen!
-			rist_log_priv(&ctx->common, RIST_LOG_ERROR,
-				"Moving delete index to %zu\n",
-				ctx->sender_queue_delete_index);
-			b = ctx->sender_queue[ctx->sender_queue_delete_index];
-			if (safety_counter++ > 1000)
-				return;
-		}
-		if (!b)
-			return;
-
-		/* perform the deletion based on the buffer size plus twice the configured/measured avg_rtt */
-		uint64_t delay = (timestampNTP_u64() - b->time) / RIST_CLOCK;
-		ctx->sender_queue_timelength = delay;
-		if (delay < ctx->sender_recover_min_time) {
-			break;
-		}
-
-		//rist_log_priv(&ctx->common, RIST_LOG_WARN,
-		//		"\tDeleting %"PRIu32" (%zu bytes) after %"PRIu64" (%zu) ms\n",
-		//		b->seq, b->size, delay, ctx->sender_recover_min_time);
-
-		/* now delete it */
-		ctx->sender_queue_bytesize -= b->size;
-		ctx->sender_queue_size--;
-		free_rist_buffer(&ctx->common, b);
-		ctx->sender_queue[ctx->sender_queue_delete_index] = NULL;
-		ctx->sender_queue_delete_index = (ctx->sender_queue_delete_index + 1)& (ctx->sender_queue_max -1);
-
-	}
-
-}
-
 size_t rist_send_seq_rtcp(struct rist_peer *p, uint16_t seq_rtp, uint8_t payload_type, uint8_t *payload, size_t payload_len, uint64_t source_time, uint16_t src_port, uint16_t dst_port, bool retry)
 {
 	struct rist_common_ctx *ctx = get_cctx(p);
@@ -676,6 +627,24 @@ int rist_sender_enqueue(struct rist_sender *ctx, const void *data, size_t len, u
 		return -1;
 	}
 
+	/* insert into sender fifo queue */
+
+	pthread_mutex_lock(&ctx->queue_lock);
+	size_t sender_write_index = atomic_load_explicit(&ctx->sender_queue_write_index, memory_order_acquire);
+	size_t sender_delete_plus_buffer_index = (ctx->sender_queue_delete_index + ctx->sender_queue_size) & (ctx->sender_queue_max - 1);
+	// TODO: figure out why this check fails when sender_write_index = 0
+	if (RIST_UNLIKELY(sender_write_index > 0 && sender_delete_plus_buffer_index > sender_write_index)) {
+		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "\nSender queue is full (%zu + %zu mod %zu = %zu > %zu), dropping packet, decrease bitrate, buffer time length or increase packet size\n",
+				ctx->sender_queue_delete_index,
+				ctx->sender_queue_size,
+				ctx->sender_queue_max - 1,
+				sender_delete_plus_buffer_index,
+				sender_write_index);
+		// Another solution is to increase the size of RIST_SERVER_QUEUE_BUFFERS at compile time
+		pthread_mutex_unlock(&ctx->queue_lock);
+		return -2;
+	}
+
 	ctx->last_datagram_time = datagram_time;
 	uint8_t tmp_buf[6 * 204 + 4];//Max size needed with at least 1 pkt suppressed
 	if (ctx->null_packet_suppression && len <= 7 * 204)
@@ -693,14 +662,11 @@ int rist_sender_enqueue(struct rist_sender *ctx, const void *data, size_t len, u
 		}
 	}
 
-	/* insert into sender fifo queue */
-	pthread_mutex_lock(&ctx->queue_lock);
-	size_t sender_write_index = atomic_load_explicit(&ctx->sender_queue_write_index, memory_order_acquire);
 	ctx->sender_queue[sender_write_index] = rist_new_buffer(&ctx->common, payload, len, payload_type, 0, datagram_time, src_port, dst_port);
 	if (RIST_UNLIKELY(!ctx->sender_queue[sender_write_index])) {
-		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "\t Could not create packet buffer inside sender buffer, OOM, decrease max bitrate or buffer time length\n");
+		rist_log_priv(&ctx->common, RIST_LOG_ERROR, "\t Could not create packet buffer inside sender buffer, OOM\n");
 		pthread_mutex_unlock(&ctx->queue_lock);
-		return -1;
+		return -3;
 	}
 	ctx->sender_queue[sender_write_index]->seq_rtp = (uint16_t)seq_rtp;
 	ctx->sender_queue_bytesize += len;

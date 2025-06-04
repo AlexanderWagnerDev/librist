@@ -321,9 +321,10 @@ static void init_peer_settings(struct rist_peer *peer)
 		}
 
 		/* Set target recover size (buffer) */
-		if ((peer->config.recovery_length_max + (2 * peer->config.recovery_rtt_max)) > ctx->sender_recover_min_time) {
-			ctx->sender_recover_min_time = peer->config.recovery_length_max + (2 * peer->config.recovery_rtt_max / RIST_CLOCK);
-			rist_log_priv(&ctx->common, RIST_LOG_INFO, "Setting buffer size to %zums (Max buffer size + 2 * Max RTT)\n", ctx->sender_recover_min_time);
+		if ((peer->config.recovery_length_max + (2 * peer->config.recovery_rtt_min)) > ctx->sender_recover_min_time) {
+			ctx->sender_recover_min_time = peer->config.recovery_length_max + (2 * peer->config.recovery_rtt_min / RIST_CLOCK);
+			rist_log_priv(&ctx->common, RIST_LOG_INFO, "Setting buffer size to %zums (Max buffer size + 2 * Min RTT, %zu+2*%zu)\n", ctx->sender_recover_min_time,
+			peer->config.recovery_length_max,peer->config.recovery_rtt_min / RIST_CLOCK);
 			// TODO: adjust this size based on the dynamic RTT measurement
 		}
 
@@ -3066,6 +3067,7 @@ static void sender_send_nacks(struct rist_sender *ctx)
 static void sender_send_data(struct rist_sender *ctx, int maxcount)
 {
 	int counter = 0;
+	static size_t buffer_size = 0;
 
 	while (1) {
 		// If we fall behind, only empty 100 every 5ms (master loop)
@@ -3084,6 +3086,7 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 
 		atomic_store_explicit(&ctx->sender_queue_read_index, idx, memory_order_release);
 		if (RIST_UNLIKELY(ctx->sender_queue[idx] == NULL)) {
+			ctx->sender_queue_size--;
 			// This should never happen!
 			rist_log_priv(&ctx->common, RIST_LOG_ERROR,
 					"FIFO data block was null (read/write) (%zu/%zu)\n",
@@ -3105,6 +3108,48 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 				ctx->seq_index[buffer->seq_rtp] = (uint32_t)idx;
 			}
 		}
+
+		// Keep only buffer_size items in buffer (this controls the size of the sender queue used on retries)
+		int reduce = 0;
+		do {
+			size_t delete_idx = ((size_t)atomic_load_explicit(&ctx->sender_queue_read_index, memory_order_acquire) - buffer_size)& (ctx->sender_queue_max-1);
+			ctx->sender_queue_delete_index = delete_idx;
+			if (ctx->sender_queue[delete_idx] && ctx->sender_queue[delete_idx]->data) {
+				/* perform the deletion based on the buffer size plus twice the configured/measured avg_rtt */
+				uint64_t delay = (timestampNTP_u64() - ctx->sender_queue[delete_idx]->time) / RIST_CLOCK;
+				ctx->sender_queue_timelength = delay;
+				if (delay < ctx->sender_recover_min_time) {
+					// this will grow the buffer size by one
+					//rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
+					//		"Sender buffer size is too small, growing it to %zu, %zu\n", buffer_size, ctx->sender_queue_size);
+					buffer_size ++;
+					reduce = 0;
+					// this continue will exit this while loop and continue in the outer loop
+					break;
+				}
+				else if (reduce == 0 && delay > ctx->sender_recover_min_time * 1.1) {
+					// this will shrink the buffer size by one
+					//rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
+					//		"Sender buffer size is too large, shrinking it to %zu, %zu\n", buffer_size, ctx->sender_queue_size);
+					if (buffer_size > 0) {
+						reduce = 1;
+						buffer_size--;
+					}
+				}
+				else {
+					// We are not reducing the buffer size a second time
+					reduce = 0;
+				}
+				ctx->sender_queue_bytesize -= ctx->sender_queue[delete_idx]->size;
+				ctx->sender_queue_size--;
+				free(ctx->sender_queue[delete_idx]->data);
+				ctx->sender_queue[delete_idx]->data = NULL;
+			}
+			if (ctx->sender_queue[delete_idx]) {
+				free(ctx->sender_queue[delete_idx]);
+				ctx->sender_queue[delete_idx] = NULL;
+			}
+		} while (reduce && ctx->sender_queue_size > 0);
 
 	}
 }
@@ -3404,8 +3449,6 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 				sender_send_nacks(ctx);
 				nacks_next_time += ctx->common.rist_max_jitter;
 			}
-			/* perform queue cleanup */
-			rist_clean_sender_enqueue(ctx, max_dataperloop);
 		}
 		pthread_mutex_unlock(&ctx->queue_lock);
 		// Send oob data
