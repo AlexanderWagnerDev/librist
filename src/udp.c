@@ -245,6 +245,7 @@ void rist_populate_cname(struct rist_peer *peer)
 	struct rist_common_ctx *ctx = get_cctx(peer);
 	if (strlen((char *)ctx->cname) != 0)
 	{
+		ctx->cname[RIST_MAX_HOSTNAME-1] = 0;
 		strncpy(identifier, (char * )ctx->cname, RIST_MAX_HOSTNAME);
 		return;
 	}
