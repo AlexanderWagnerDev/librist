@@ -83,6 +83,14 @@ void rist_sender_peer_statistics(struct rist_peer *peer)
 	cJSON_AddNumberToObject(json_stats, "avg_rtt", (double)avg_rtt / RIST_CLOCK);
 	cJSON_AddNumberToObject(json_stats, "retry_buffer_size", (double)retry_buf_size);
 	cJSON_AddNumberToObject(json_stats, "cooldown_time", (double)time_left);
+	cJSON *udp_queue_obj = cJSON_AddObjectToObject(rist_sender_stats, "incoming_queue");
+	cJSON_AddNumberToObject(udp_queue_obj, "size", peer->sender_ctx->sender_queue_size);
+	cJSON_AddNumberToObject(udp_queue_obj, "bytesize", peer->sender_ctx->sender_queue_bytesize);
+	cJSON_AddNumberToObject(udp_queue_obj, "time_length", peer->sender_ctx->sender_queue_timelength);
+	if (peer->sender_ctx->sender_queue_timelength > 0)
+		cJSON_AddNumberToObject(udp_queue_obj, "packets_per_second", 1000 * peer->sender_ctx->sender_queue_size / peer->sender_ctx->sender_queue_timelength);
+	else
+		cJSON_AddNumberToObject(udp_queue_obj, "packets_per_second", 0);
 	char *stats_string = cJSON_PrintUnformatted(stats);
 	cJSON_Delete(stats);
 

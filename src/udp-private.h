@@ -22,7 +22,6 @@
 #define RIST_PAYLOAD_TYPE_DATA_OOB          0x6 // Out-of-band data
 #define RIST_PAYLOAD_TYPE_DATA_RAW_RTP_EXT  0x7
 #define RIST_PAYLOAD_TYPE_EAPOL				0x8
-#define RIST_PAYLOAD_TYPE_UDP_PACING        0x9
 
 // Maximum offset before the payload that the code can use to put in headers
 #define RIST_MAX_PAYLOAD_OFFSET (sizeof(struct rist_gre_key_seq) + sizeof(struct rist_protocol_hdr))
@@ -37,7 +36,6 @@ RIST_PRIV int rist_request_echo(struct rist_peer *peer);
 RIST_PRIV int rist_send_common_rtcp(struct rist_peer *p, uint8_t payload_type, uint8_t *payload, size_t payload_len, uint64_t source_time, uint16_t src_port, uint16_t dst_port, uint32_t seq_rtp);
 RIST_PRIV void rist_sender_send_data_balanced(struct rist_sender *ctx, struct rist_buffer *buffer);
 RIST_PRIV int rist_sender_enqueue(struct rist_sender *ctx, const void *data, size_t len, uint64_t datagram_time, uint16_t src_port, uint16_t dst_port, uint32_t seq_rtp);
-RIST_PRIV void rist_clean_sender_enqueue(struct rist_sender *ctx, int maxcount);
 RIST_PRIV void rist_retry_enqueue(struct rist_sender *ctx, uint32_t seq, struct rist_peer *peer);
 RIST_PRIV ssize_t rist_retry_dequeue(struct rist_sender *ctx);
 RIST_PRIV int rist_set_url(struct rist_peer *peer);

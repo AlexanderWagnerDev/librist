@@ -321,9 +321,10 @@ static void init_peer_settings(struct rist_peer *peer)
 		}
 
 		/* Set target recover size (buffer) */
-		if ((peer->config.recovery_length_max + (2 * peer->config.recovery_rtt_max)) > ctx->sender_recover_min_time) {
-			ctx->sender_recover_min_time = peer->config.recovery_length_max + (2 * peer->config.recovery_rtt_max / RIST_CLOCK);
-			rist_log_priv(&ctx->common, RIST_LOG_INFO, "Setting buffer size to %zums (Max buffer size + 2 * Max RTT)\n", ctx->sender_recover_min_time);
+		if ((peer->config.recovery_length_max + (2 * peer->config.recovery_rtt_min)) > ctx->sender_recover_min_time) {
+			ctx->sender_recover_min_time = peer->config.recovery_length_max + (2 * peer->config.recovery_rtt_min / RIST_CLOCK);
+			rist_log_priv(&ctx->common, RIST_LOG_INFO, "Setting buffer size to %zums (Max buffer size + 2 * Min RTT, %zu+2*%zu)\n", ctx->sender_recover_min_time,
+			peer->config.recovery_length_max,peer->config.recovery_rtt_min / RIST_CLOCK);
 			// TODO: adjust this size based on the dynamic RTT measurement
 		}
 
@@ -3066,6 +3067,7 @@ static void sender_send_nacks(struct rist_sender *ctx)
 static void sender_send_data(struct rist_sender *ctx, int maxcount)
 {
 	int counter = 0;
+	static size_t buffer_size = 0;
 
 	while (1) {
 		// If we fall behind, only empty 100 every 5ms (master loop)
@@ -3084,6 +3086,7 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 
 		atomic_store_explicit(&ctx->sender_queue_read_index, idx, memory_order_release);
 		if (RIST_UNLIKELY(ctx->sender_queue[idx] == NULL)) {
+			ctx->sender_queue_size--;
 			// This should never happen!
 			rist_log_priv(&ctx->common, RIST_LOG_ERROR,
 					"FIFO data block was null (read/write) (%zu/%zu)\n",
@@ -3105,6 +3108,48 @@ static void sender_send_data(struct rist_sender *ctx, int maxcount)
 				ctx->seq_index[buffer->seq_rtp] = (uint32_t)idx;
 			}
 		}
+
+		// Keep only buffer_size items in buffer (this controls the size of the sender queue used on retries)
+		int reduce = 0;
+		do {
+			size_t delete_idx = ((size_t)atomic_load_explicit(&ctx->sender_queue_read_index, memory_order_acquire) - buffer_size)& (ctx->sender_queue_max-1);
+			ctx->sender_queue_delete_index = delete_idx;
+			if (ctx->sender_queue[delete_idx] && ctx->sender_queue[delete_idx]->data) {
+				/* perform the deletion based on the buffer size plus twice the configured/measured avg_rtt */
+				uint64_t delay = (timestampNTP_u64() - ctx->sender_queue[delete_idx]->time) / RIST_CLOCK;
+				ctx->sender_queue_timelength = delay;
+				if (delay < ctx->sender_recover_min_time) {
+					// this will grow the buffer size by one
+					//rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
+					//		"Sender buffer size is too small, growing it to %zu, %zu\n", buffer_size, ctx->sender_queue_size);
+					buffer_size ++;
+					reduce = 0;
+					// this continue will exit this while loop and continue in the outer loop
+					break;
+				}
+				else if (reduce == 0 && delay > ctx->sender_recover_min_time * 1.1) {
+					// this will shrink the buffer size by one
+					//rist_log_priv(&ctx->common, RIST_LOG_DEBUG,
+					//		"Sender buffer size is too large, shrinking it to %zu, %zu\n", buffer_size, ctx->sender_queue_size);
+					if (buffer_size > 0) {
+						reduce = 1;
+						buffer_size--;
+					}
+				}
+				else {
+					// We are not reducing the buffer size a second time
+					reduce = 0;
+				}
+				ctx->sender_queue_bytesize -= ctx->sender_queue[delete_idx]->size;
+				ctx->sender_queue_size--;
+				free(ctx->sender_queue[delete_idx]->data);
+				ctx->sender_queue[delete_idx]->data = NULL;
+			}
+			if (ctx->sender_queue[delete_idx]) {
+				free(ctx->sender_queue[delete_idx]);
+				ctx->sender_queue[delete_idx] = NULL;
+			}
+		} while (reduce && ctx->sender_queue_size > 0);
 
 	}
 }
@@ -3327,98 +3372,6 @@ void rist_timeout_check(struct rist_common_ctx *cctx, uint64_t now)
 	}
 }
 
-PTHREAD_START_FUNC(udp_pacing_pthread, arg)
-{
-	struct rist_common_ctx *cctx = (struct rist_common_ctx *) arg;
-	ssize_t ret = 0;
-	uint32_t packet_spacing_8avg = 8 * 1000 * (cctx->rist_max_jitter / RIST_CLOCK); // 5000 us (5 ms), default / initial value
-	rist_log_priv(cctx, RIST_LOG_INFO, "Starting udp pacing loop (%d)\n", packet_spacing_8avg / 8);
-
-	while(!atomic_load_explicit(&cctx->shutdown, memory_order_acquire)) {
-
-		size_t idx = ((size_t)atomic_load_explicit(&cctx->udp_pacing_queue_read_index, memory_order_acquire) + 1)& (cctx->udp_pacing_queue_max-1);
-		// No data in the queue, sleep and loop
-		if (idx == atomic_load_explicit(&cctx->udp_pacing_queue_write_index, memory_order_acquire)) {
-			usleep(packet_spacing_8avg / 8);
-			continue;
-		}
-
-		// Extract udp pacing data from the queue
-		struct rist_buffer *udp_pacing_buffer = &cctx->udp_pacing_queue[idx];
-		uint8_t *payload = udp_pacing_buffer->data;
-		struct rist_peer *p = udp_pacing_buffer->peer;
-
-		if (p->config.congestion_control_mode != RIST_CONGESTION_CONTROL_MODE_OFF)
-		{
-			// Calculate sleep time for next packet
-			uint32_t window_size = p->config.recovery_reorder_buffer * 1000; // convert to microseconds
-			size_t congestion_control_multiplier = 2; // RIST_CONGESTION_CONTROL_MODE_NORMAL
-			if (p->config.congestion_control_mode == RIST_CONGESTION_CONTROL_MODE_AGGRESSIVE)
-				congestion_control_multiplier = 1;
-			size_t queue_size = congestion_control_multiplier * (atomic_load_explicit(&cctx->udp_pacing_queue_size, memory_order_acquire) + 2); // +2 will correct small queue size calculation
-			// Size of the recovery buffer divided by the number of packets in the queue
-			// This is the time we need to wait before sending the next packet
-			uint32_t packet_spacing_instant = window_size / (uint32_t)queue_size;
-			if (p->config.congestion_control_mode == RIST_CONGESTION_CONTROL_MODE_AGGRESSIVE)
-			{
-				// slow moving average
-				packet_spacing_8avg -= packet_spacing_8avg / 8;
-				packet_spacing_8avg += packet_spacing_instant;
-			}
-			else
-				packet_spacing_8avg = 8 * packet_spacing_instant;
-			usleep(packet_spacing_8avg / 8);
-		}
-
-		// Send data to socket
-		if (RIST_UNLIKELY(!p || atomic_load_explicit(&p->shutdown, memory_order_acquire))) {
-			// skip this one as peer destination is shutting down or null
-		}
-		else {
-			if (cctx->profile == RIST_PROFILE_SIMPLE)
-				ret = sendto(p->sd,(const char*)&payload[RIST_MAX_PAYLOAD_OFFSET], udp_pacing_buffer->size, 0, &(p->u.address), p->address_len);
-			else
-			{
-				uint32_t src_port = udp_pacing_buffer->src_port;
-				uint32_t dst_port = udp_pacing_buffer->dst_port;
-				uint32_t payload_type = udp_pacing_buffer->type;
-				uint16_t proto_type;
-				if (RIST_UNLIKELY(payload_type == RIST_PAYLOAD_TYPE_DATA_OOB))
-					proto_type = RIST_GRE_PROTOCOL_TYPE_FULL;
-				else
-					proto_type = RIST_GRE_PROTOCOL_TYPE_REDUCED;
-				ret = _librist_proto_gre_send_data(p, payload_type, proto_type, &payload[RIST_MAX_PAYLOAD_OFFSET], udp_pacing_buffer->size, src_port, dst_port, p->rist_gre_version);
-			}
-			if (RIST_UNLIKELY(ret <= 0)) {
-				rist_log_priv(cctx, RIST_LOG_ERROR, "\tUDP Pacing Send failed, data loss: errno=%d, ret=%d, socket=%d\n", errno, ret, p->sd);
-				// TODO: track this error as data loss for sender in stats
-			}
-		}
-		cctx->udp_pacing_queue_bytesize -= udp_pacing_buffer->size;
-		free(payload);
-		udp_pacing_buffer->data = NULL;
-		atomic_store_explicit(&cctx->udp_pacing_queue_size, atomic_load_explicit(&cctx->udp_pacing_queue_size, memory_order_acquire) - 1, memory_order_release);
-		atomic_store_explicit(&cctx->udp_pacing_queue_read_index, idx, memory_order_release);
-	}
-
-	// Free any remaining udp pacing buffers
-	uint16_t index = 0;
-	while (1) {
-		if (index == cctx->udp_pacing_queue_write_index) {
-				break;
-		}
-		if (cctx->udp_pacing_queue[index].data)
-			free(cctx->udp_pacing_queue[index].data);
-		index++;
-	}
-	
-	cctx->udp_pacing_queue_bytesize = 0;
-	rist_log_priv(cctx, RIST_LOG_INFO, "Exiting udp pacing loop\n");
-	atomic_store_explicit(&cctx->shutdown, atomic_load_explicit(&cctx->shutdown, memory_order_acquire) + 1, memory_order_release);
-
-	return 0;
-}
-
 PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 {
 	struct rist_sender *ctx = (struct rist_sender *) arg;
@@ -3496,8 +3449,6 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 				sender_send_nacks(ctx);
 				nacks_next_time += ctx->common.rist_max_jitter;
 			}
-			/* perform queue cleanup */
-			rist_clean_sender_enqueue(ctx, max_dataperloop);
 		}
 		pthread_mutex_unlock(&ctx->queue_lock);
 		// Send oob data
@@ -3510,7 +3461,7 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 	WSACleanup();
 #endif
 	rist_log_priv(&ctx->common, RIST_LOG_INFO, "Exiting master sender loop\n");
-	atomic_store_explicit(&ctx->common.shutdown, atomic_load_explicit(&ctx->common.shutdown, memory_order_acquire) + 1, memory_order_release);
+	atomic_store_explicit(&ctx->common.shutdown, 2, memory_order_release);
 
 	return 0;
 }
@@ -3541,15 +3492,6 @@ int init_common_ctx(struct rist_common_ctx *ctx, enum rist_profile profile)
 
 	ctx->profile = profile;
 	ctx->stats_report_time = 0;
-
-	ctx->udp_pacing_queue_max = RIST_UDP_PACING_QUEUE_BUFFERS;
-	atomic_init(&ctx->udp_pacing_queue_write_index, 1);
-	atomic_init(&ctx->udp_pacing_queue_read_index, 0);
-	if (pthread_rwlock_init(&ctx->udp_pacing_queue_lock, NULL) != 0)
-	{
-		rist_log_priv3(RIST_LOG_ERROR, "Failed to init ctx->common.udp_pacing_queue_lock\n");
-		return -1;
-	}
 
 	if (pthread_mutex_init(&ctx->peerlist_lock, NULL) != 0) {
 		rist_log_priv3( RIST_LOG_ERROR, "Failed to init ctx->peerlist_lock\n");
@@ -4147,7 +4089,7 @@ PTHREAD_START_FUNC(receiver_pthread_protocol, arg)
 	WSACleanup();
 #endif
 	rist_log_priv(&ctx->common, RIST_LOG_INFO, "Exiting master receiver loop\n");
-	atomic_store_explicit(&ctx->common.shutdown, atomic_load_explicit(&ctx->common.shutdown, memory_order_acquire) + 1, memory_order_release);
+	atomic_store_explicit(&ctx->common.shutdown, 2, memory_order_release);
 
 	return 0;
 }
@@ -4196,6 +4138,7 @@ void rist_sender_destroy_local(struct rist_sender *ctx)
 		}
 		if (b) {
 			ctx->sender_queue_bytesize -= b->size;
+			ctx->sender_queue_size--;
 			free_rist_buffer(&ctx->common, b);
 			ctx->sender_queue[ctx->sender_queue_delete_index] = NULL;
 		}

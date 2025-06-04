@@ -11,7 +11,6 @@
 #define RIST_LOG_QUIESCE_TIMER  ONE_SECOND
 #define SEVENTY_YEARS_OFFSET (2208988800ULL)
 
-RIST_PRIV struct timespec timestamp_ts(void);
 RIST_PRIV uint64_t timestampNTP_u64(void);
 RIST_PRIV uint64_t timestampNTP_RTC_u64(void);
 RIST_PRIV uint32_t timestampRTP_u32(int advanced, uint64_t i_ntp);
