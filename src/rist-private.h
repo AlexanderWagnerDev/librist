@@ -31,6 +31,7 @@
 #include <stdatomic.h>
 #include "librist/logging.h"
 #include "proto/gre.h"
+#include "cjson/cJSON.h"
 
 #undef RIST_DEPRECATED
 
@@ -454,6 +455,11 @@ struct rist_sender {
 
 	/* Queue lock for fifo buffer */
 	pthread_mutex_t queue_lock;
+
+	/* sender stats callback */
+	int (*sender_stats_callback)(void *arg, uint16_t version, char *stats_json, uint32_t json_size);
+	void *sender_stats_callback_argument;
+	uint64_t stats_report_time; /* in ticks */
 };
 
 enum rist_ctx_mode {
@@ -631,7 +637,8 @@ static inline struct rist_common_ctx *rist_struct_get_common(struct rist_ctx *ct
 
 /* defined in flow.c */
 RIST_PRIV void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *flow);
-RIST_PRIV void rist_sender_peer_statistics(struct rist_peer *peer);
+RIST_PRIV cJSON *rist_sender_peer_statistics(struct rist_peer *peer);
+RIST_PRIV void rist_sender_flow_statistics(struct rist_sender *ctx);
 RIST_PRIV void rist_delete_flow(struct rist_receiver *ctx, struct rist_flow *f);
 RIST_PRIV void rist_receiver_missing(struct rist_flow *f, struct rist_peer *peer,uint64_t nack_time, uint32_t seq, uint64_t rtt);
 RIST_PRIV int rist_receiver_associate_flow(struct rist_peer *p, uint32_t flow_id);

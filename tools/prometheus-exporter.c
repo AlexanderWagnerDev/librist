@@ -417,6 +417,11 @@ void rist_prometheus_handle_sender_peer_stats(struct rist_prometheus_stats *ctx,
 	}
 }
 
+void rist_prometheus_parse_sender_stats(struct rist_prometheus_stats *ctx, uint16_t version, char *stats_json, uint32_t json_size, uintptr_t id)
+{
+	// TODO: convert json stats to prometheus stats
+}
+
 void rist_prometheus_parse_stats(struct rist_prometheus_stats *ctx, const struct rist_stats *stats_container, uintptr_t id) {
 	pthread_mutex_lock(&ctx->lock);
 	uint64_t now = get_timestamp();

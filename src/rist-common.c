@@ -3398,7 +3398,7 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 	int max_oobperloop = 100;
 
 	int max_jitter_ms = ctx->common.rist_max_jitter / RIST_CLOCK;
-	uint64_t rist_stats_interval = ctx->common.stats_report_time; // 1 second
+	uint64_t rist_stats_interval = ctx->stats_report_time; // 1 second
 
 	rist_log_priv(&ctx->common, RIST_LOG_INFO, "Starting master sender loop at %d ms max jitter\n",
 			max_jitter_ms);
@@ -3433,16 +3433,7 @@ PTHREAD_START_FUNC(sender_pthread_protocol, arg)
 		// stats timer
 		if (now > ctx->stats_next_time) {
 			ctx->stats_next_time += rist_stats_interval;
-
-			pthread_mutex_lock(&ctx->common.peerlist_lock);
-			for (size_t j = 0; j < ctx->peer_lst_len; j++) {
-				struct rist_peer *peer = ctx->peer_lst[j];
-				// TODO: print warning if the peer is dead?, i.e. no stats
-				if (!peer->dead) {
-					rist_sender_peer_statistics(peer);
-				}
-			}
-			pthread_mutex_unlock(&ctx->common.peerlist_lock);
+			rist_sender_flow_statistics(ctx);
 			// TODO: remove dead peers after stale flow time (both sender list and peer chain)
 			// sender_peer_delete(peer->sender_ctx, peer);
 		}

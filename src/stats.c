@@ -20,13 +20,40 @@ static double round_two_digits(double number)
 	return (double)(new_number) / 100;
 }
 
-void rist_sender_peer_statistics(struct rist_peer *peer)
+void rist_sender_flow_statistics(struct rist_sender *ctx)
 {
-	// TODO: print warning here?? stale flow?
-	if (!peer->authenticated)
-	{
-		return;
+	cJSON *stats = cJSON_CreateObject();
+	cJSON *rist_sender_stats = cJSON_AddObjectToObject(stats, "sender-stats");
+
+	pthread_mutex_lock(&ctx->common.peerlist_lock);
+	for (size_t j = 0; j < ctx->peer_lst_len; j++) {
+		struct rist_peer *peer = ctx->peer_lst[j];
+		if (!peer->dead && peer->authenticated) {
+			cJSON *peer_obj = rist_sender_peer_statistics(peer);
+			cJSON_AddItemToArray(rist_sender_stats, peer_obj);
+		}
 	}
+	pthread_mutex_unlock(&ctx->common.peerlist_lock);
+
+	cJSON *udp_queue_obj = cJSON_AddObjectToObject(rist_sender_stats, "incoming_queue");
+	cJSON_AddNumberToObject(udp_queue_obj, "size", ctx->sender_queue_size);
+	cJSON_AddNumberToObject(udp_queue_obj, "bytesize", ctx->sender_queue_bytesize);
+	cJSON_AddNumberToObject(udp_queue_obj, "time_length", ctx->sender_queue_timelength);
+	if (ctx->sender_queue_timelength > 0)
+		cJSON_AddNumberToObject(udp_queue_obj, "packets_per_second", 1000 * ctx->sender_queue_size / ctx->sender_queue_timelength);
+	else
+		cJSON_AddNumberToObject(udp_queue_obj, "packets_per_second", 0);
+	char *stats_json = cJSON_PrintUnformatted(stats);
+	cJSON_Delete(stats);
+
+	if (ctx->sender_stats_callback != NULL)
+		ctx->sender_stats_callback(ctx->sender_stats_callback_argument, RIST_SENDER_STATS_VERSION, stats_json, (uint32_t)strlen(stats_json));
+
+	free(stats_json);
+}
+
+cJSON *rist_sender_peer_statistics(struct rist_peer *peer)
+{
 	pthread_mutex_lock(&(get_cctx(peer)->stats_lock));
 	struct rist_stats *stats_container = malloc(sizeof(struct rist_stats));
 	stats_container->stats_type = RIST_STATS_SENDER_PEER;
@@ -89,14 +116,7 @@ void rist_sender_peer_statistics(struct rist_peer *peer)
 	cJSON_AddNumberToObject(json_stats, "avg_rtt", (double)avg_rtt / RIST_CLOCK);
 	cJSON_AddNumberToObject(json_stats, "retry_buffer_size", (double)retry_buf_size);
 	cJSON_AddNumberToObject(json_stats, "cooldown_time", (double)time_left);
-	cJSON *udp_queue_obj = cJSON_AddObjectToObject(rist_sender_stats, "incoming_queue");
-	cJSON_AddNumberToObject(udp_queue_obj, "size", peer->sender_ctx->sender_queue_size);
-	cJSON_AddNumberToObject(udp_queue_obj, "bytesize", peer->sender_ctx->sender_queue_bytesize);
-	cJSON_AddNumberToObject(udp_queue_obj, "time_length", peer->sender_ctx->sender_queue_timelength);
-	if (peer->sender_ctx->sender_queue_timelength > 0)
-		cJSON_AddNumberToObject(udp_queue_obj, "packets_per_second", 1000 * peer->sender_ctx->sender_queue_size / peer->sender_ctx->sender_queue_timelength);
-	else
-		cJSON_AddNumberToObject(udp_queue_obj, "packets_per_second", 0);
+	cJSON *peer_duplicate = cJSON_Duplicate(peer_obj, true);
 	char *stats_string = cJSON_PrintUnformatted(stats);
 	cJSON_Delete(stats);
 
@@ -121,6 +141,8 @@ void rist_sender_peer_statistics(struct rist_peer *peer)
 
 	memset(&peer->stats_sender_instant, 0, sizeof(peer->stats_sender_instant));
 	pthread_mutex_unlock(&(get_cctx(peer)->stats_lock));
+
+	return peer_duplicate;
 }
 
 void rist_receiver_flow_statistics(struct rist_receiver *ctx, struct rist_flow *flow)
